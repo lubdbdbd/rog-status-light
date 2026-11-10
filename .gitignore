@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+release/
+*.pfx
+*.p12
+.env
+*.log
+.local/

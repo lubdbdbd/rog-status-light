@@ -1,0 +1,7 @@
+{
+  "paused": false,
+  "scroll_step_seconds": 0.14,
+  "flash_half_period_seconds": 0.55,
+  "poll_seconds": 0.6,
+  "preserve_windows_color": true
+}
