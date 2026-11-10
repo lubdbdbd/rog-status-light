@@ -60,10 +60,26 @@ class AutomaticBluetooth(unittest.TestCase):
         streams=[c for c in wire.calls if c[0]=='direct']
         self.assertEqual([i for i,_ in streams[0][1]],list(ble.KEY_LEDS))
         self.assertFalse(streams[0][2])
-        self.assertTrue(all(set(i for i,_ in c[1])<=set(ble.TOP_ROW) and c[2] for c in streams[1:]))
+        self.assertTrue(all(c[2] for c in streams[1:]))
+        self.assertTrue(all(color==(7,244,7) for c in streams[1:] for index,color in c[1] if index not in ble.TOP_ROW))
         self.assertTrue(wire.closed)
         self.assertFalse(wire.allow_persistent_commit)
         self.assertEqual(wire.calls[-1],('effect',(7,244,7),100,False))
+
+    def test_body_lighting_is_repaired_after_a_sleep_buffer_loss_without_full_frame_stalls(self):
+        wire=Wire();session=ble.BluetoothLighting(([7,244,7],100,'fast'),client_factory=lambda:wire)
+        clock=SimpleNamespace(now=100.)
+        async def run():
+            await session.connect();await session.render('working',0)
+            wire.calls.clear()  # Simulate the body losing its lighting buffer.
+            for tick in range(100):
+                clock.now+=.034
+                await session.render('working',tick*.034)
+        with patch('bluetooth_backend.time.perf_counter',side_effect=lambda:clock.now):asyncio.run(run())
+        writes=[call for call in wire.calls if call[0]=='direct']
+        body={i for call in writes for i,color in call[1] if i in ble.BODY_LEDS and color==(7,244,7)}
+        self.assertEqual(body,set(ble.BODY_LEDS))
+        self.assertTrue(all(len(call[1])<=15 and call[2] for call in writes))
 
     def test_attention_uses_firmware_breath_and_does_not_restart_it_every_frame(self):
         wire=Wire();session=ble.BluetoothLighting(([7,244,7],100,'fast'),client_factory=lambda:wire)

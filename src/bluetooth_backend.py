@@ -19,6 +19,7 @@ KEY_LEDS=(
     3,11,19,27,35,43,51,59,67,75,83,91,107,115,
     4,20,28,36,44,52,60,68,76,84,92,100,108,116,
     5,13,21,53,77,85,93,101,109,117)
+BODY_LEDS=tuple(index for index in KEY_LEDS if index not in TOP_ROW)
 
 
 class RowScheduler:
@@ -254,6 +255,8 @@ class BluetoothLighting:
         self.scheduler=None
         self.changed=False
         self.connected_at=0
+        self.body_cursor=0
+        self.last_body_refresh=0
 
     @property
     def connected(self):
@@ -277,16 +280,27 @@ class BluetoothLighting:
                 await self.client.direct(((i,self.base) for i in KEY_LEDS),tick)
                 self.scheduler=RowScheduler(self.base)
                 self.client.packet_seconds=None
+                self.body_cursor=0
+                self.last_body_refresh=time.perf_counter()
             else:self.scheduler=None
             self.mode=mode
         if mode!='working':return False
         desired=frame(self.base,len(KEY_LEDS),list(range(15)),mode,elapsed,step,flash)[:15]
         seconds=self.client.packet_seconds
         budget=(15 if self.transport=='fast' else 4) if seconds is None else max(4,min(15,4*int((1/30-.001)/max(.001,seconds))))
-        selected=self.scheduler.choose(desired,budget)
-        if selected:
-            await self.client.direct(selected,tick,without_response=self.transport=='fast')
+        now=time.perf_counter()
+        refresh_body=now-self.last_body_refresh>=(1/30 if self.transport=='fast' else .1)
+        # Keep the non-animated lamps alive after wireless sleep/host-buffer
+        # loss. Reserve one slot inside the existing packet budget so a body
+        # refresh never stalls the wave with a complete acknowledged frame.
+        selected=self.scheduler.choose(desired,budget-int(refresh_body))
+        body=[(BODY_LEDS[self.body_cursor],self.base)] if refresh_body else []
+        if selected or body:
+            await self.client.direct(selected+body,tick,without_response=self.transport=='fast')
             self.scheduler.accept(selected)
+            if body:
+                self.body_cursor=(self.body_cursor+1)%len(BODY_LEDS)
+                self.last_body_refresh=now
         return bool(selected)
 
     async def close(self,restore=True):
