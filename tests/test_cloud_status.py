@@ -1,6 +1,8 @@
 import base64
+from contextlib import closing
 import io
 import json
+import sqlite3
 from pathlib import Path
 import sys
 import tempfile
@@ -12,7 +14,7 @@ from unittest.mock import patch
 
 WORK=Path(__file__).resolve().parent
 sys.path[:0]=[str(WORK.parent/'src'),str(WORK.parents[1]/'work'/'deps')]
-from cloud_status import CloudMonitor,CloudRPC,CloudReadError,CloudSnapshot,parse_tasks
+from cloud_status import ACTIVE_STALE_SECONDS,CloudMonitor,CloudRPC,CloudReadError,CloudSnapshot,parse_tasks
 from core import Status,StatusReader
 
 
@@ -38,6 +40,52 @@ class CloudStatusTests(unittest.TestCase):
     def test_non_loaded_threads_are_not_running(self):
         monitor,_,_=self.monitor([raw(kind='notLoaded')]);monitor.poll()
         self.assertFalse(monitor.snapshot().active_ids)
+
+    def test_old_active_records_do_not_keep_the_cloud_counter_running(self):
+        rows=[raw('day-old',updated=10),raw('month-old',updated=1)]
+        monitor,_,clock=self.monitor(rows);clock.now=ACTIVE_STALE_SECONDS+100
+        monitor.poll()
+        self.assertFalse(monitor.snapshot().active_ids)
+        self.assertEqual(monitor.snapshot().completed_at,0)
+        rows[0]=raw('day-old',updated=clock.now)
+        monitor.poll()
+        self.assertEqual(monitor.snapshot().active_ids,frozenset({'day-old'}))
+
+    def test_stale_waiting_flags_do_not_keep_a_reminder_active(self):
+        monitor,_,clock=self.monitor([raw(flags=['waitingOnApproval'])])
+        clock.now=ACTIVE_STALE_SECONDS+100;monitor.poll()
+        self.assertFalse(monitor.snapshot().pending)
+
+    def test_real_activity_and_millisecond_timestamps_preserve_long_running_work(self):
+        row=raw(updated=10);row['lastActivityAt']=2000000000000
+        monitor,_,clock=self.monitor([row]);clock.now=2000000001
+        monitor.poll()
+        self.assertEqual(monitor.snapshot().active_ids,frozenset({'cloud-task'}))
+
+    def test_scheduled_sources_and_metadata_never_enter_the_counter(self):
+        rows=[raw('manual')]
+        for source in ('heartbeat','cron','automation','scheduled_task','THREAD_SOURCE_HEARTBEAT','THREAD_SOURCE_CRON'):
+            rows.append(raw(source,source=source))
+        for index,metadata in enumerate(({'scheduledTaskId':'schedule'}, {'automationId':'automation'},
+                {'runTrigger':'scheduled'}, {'source':{'heartbeat':{}}},
+                {'source':{'type':'cron'}}, {'source':{'customSessionSource':{'custom':'heartbeat'}}})):
+            rows.append(raw(str(index))|metadata)
+        self.assertEqual([r['id'] for r in parse_tasks(rows)],['manual'])
+
+    def test_manual_work_about_a_scheduler_is_still_counted(self):
+        row=raw();row['title']='Build a scheduled task manager'
+        self.assertTrue(parse_tasks([row])[0]['active'])
+
+    def test_cloud_tasks_registered_as_automation_runs_are_ignored(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home=Path(directory);(home/'sqlite').mkdir()
+            with closing(sqlite3.connect(home/'sqlite/codex.db')) as db:
+                db.execute('CREATE TABLE automation_runs(thread_id TEXT)')
+                db.execute("INSERT INTO automation_runs VALUES ('scheduled')")
+                db.commit()
+            rpc=SimpleNamespace(fetch=lambda:('owner',parse_tasks([raw('scheduled'),raw('manual')])))
+            monitor=CloudMonitor(home,rpc,lambda:100);monitor.poll()
+            self.assertEqual(monitor.snapshot().active_ids,frozenset({'manual'}))
 
     def test_numeric_waiting_flags_are_supported_too(self):
         self.assertTrue(parse_tasks([raw(flags=[2])])[0]['pending'])

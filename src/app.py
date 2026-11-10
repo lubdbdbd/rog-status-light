@@ -29,7 +29,7 @@ from runtime_paths import DATA
 from lamp_devices import is_target_lamp, connection_label, device_order
 from background_access import package_identity, policy, access_hint
 
-VERSION = '1.7.0'
+VERSION = '1.7.1'
 ROOT = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
 DATA.mkdir(parents=True, exist_ok=True)
 CONFIG_PATH = DATA / 'config.json'

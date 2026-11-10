@@ -137,6 +137,31 @@ class StateReader(unittest.TestCase):
         state=self.reader.snapshot()
         self.assertEqual((state.mode,state.active),('working',2))
 
+    def test_scheduled_local_runs_are_excluded_without_hiding_manual_work(self):
+        self.add('manual');self.add('cron',source='cron');self.add('heartbeat',source='heartbeat')
+        state=self.reader.snapshot()
+        self.assertEqual((state.mode,state.active),('working',1))
+
+    def test_heartbeat_turn_is_ignored_but_manual_message_in_the_same_chat_counts(self):
+        self.add('one')
+        item={'type':'userMessage','content':[{'type':'text','text':'<heartbeat>\n<instructions>Check progress</instructions>\n</heartbeat>'}]}
+        with closing(sqlite3.connect(self.home/'thread_history_1.sqlite')) as db:
+            db.execute('INSERT INTO thread_items VALUES(?,?,0,?,?)',('one','turn-one','userMessage',json.dumps(item)))
+            db.commit()
+        self.assertEqual(self.reader.snapshot().mode,'idle')
+        item['content']=[{'type':'text','text':'Help me build a scheduler'}]
+        with closing(sqlite3.connect(self.home/'thread_history_1.sqlite')) as db:
+            db.execute('UPDATE thread_items SET item_json=?',(json.dumps(item),));db.commit()
+        self.assertEqual(self.reader.snapshot().active,1)
+
+    def test_automation_run_registry_excludes_runs_with_a_user_source(self):
+        self.add('one');(self.home/'sqlite').mkdir()
+        with closing(sqlite3.connect(self.home/'sqlite/codex.db')) as db:
+            db.execute('CREATE TABLE automation_runs(thread_id TEXT)')
+            db.execute("INSERT INTO automation_runs VALUES ('one')")
+            db.execute('CREATE TABLE inbox_items(id TEXT,read_at INT,created_at INT)');db.commit()
+        self.assertEqual(self.reader.snapshot().mode,'idle')
+
     def test_closed_app_is_idle(self):
         self.add('one')
         self.reader.app_running=False

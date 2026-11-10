@@ -8,6 +8,7 @@ import time
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
+from cloud_status import is_scheduled_source,scheduled_message,scheduled_thread_ids
 
 
 @dataclass(frozen=True)
@@ -126,6 +127,7 @@ class StatusReader:
         folder = self.data / 'events'
         if not folder.exists():
             return
+        scheduled=scheduled_thread_ids(self.home)
         for path in sorted(folder.glob('*.json'))[:250]:
             try:
                 event = json.loads(path.read_text(encoding='utf-8'))
@@ -134,6 +136,9 @@ class StatusReader:
                     path.unlink(missing_ok=True)
                     continue
                 key = event.get('session_id', '')
+                if key in scheduled:
+                    path.unlink(missing_ok=True)
+                    continue
                 kind = event.get('event', '')
                 if kind == 'UserPromptSubmit':
                     self.hook_waits.pop(key, None)
@@ -189,6 +194,7 @@ class StatusReader:
         pending = False
         persistent_error = False
         try:
+            scheduled=scheduled_thread_ids(self.home)
             with closing(self.connect(self.home / 'state_5.sqlite')) as state:
                 metadata = {r['id']: r for r in state.execute(
                     'SELECT id,archived,thread_source,agent_path FROM threads')}
@@ -203,12 +209,19 @@ class StatusReader:
                 for turn in turns:
                     key = turn['thread_id']
                     meta = metadata.get(key)
-                    if not meta or meta['archived'] or meta['thread_source'] == 'subagent':
+                    if (not meta or meta['archived'] or meta['thread_source'] == 'subagent'
+                            or is_scheduled_source(meta['thread_source']) or key in scheduled):
                         continue
                     if meta['agent_path'] not in (None, '', '/root'):
                         continue
                     started = turn['started_at'] or 0
                     if started < self.process_floor:
+                        continue
+                    first_user=history.execute('''SELECT item_json FROM thread_items
+                        WHERE thread_id=? AND turn_id=? AND item_type='userMessage'
+                        ORDER BY rollout_ordinal LIMIT 1''',(key,turn['turn_id'])).fetchone()
+                    if first_user and scheduled_message(json.loads(first_user[0])):
+                        self.hook_waits.pop(key,None);self.hook_errors.pop(key,None)
                         continue
                     live_ids.add(key)
                     previous = self.seen_turns.get(key)
