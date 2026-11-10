@@ -11,7 +11,7 @@ import subprocess
 import time
 import zipfile
 
-SOURCES=('app.py','background_access.py','bluetooth_backend.py','core.py','event_hook.py',
+SOURCES=('app.py','background_access.py','bluetooth_backend.py','cloud_status.py','core.py','event_hook.py',
          'hook_setup.py','lamp_devices.py','lighting_lifecycle.py','native_signals.py','runtime_paths.py')
 PACKAGING=('安装.cmd','打开控制面板.cmd','退出程序.cmd','卸载.cmd','Install.ps1','Start.ps1',
            'Stop.ps1','Uninstall.ps1','使用说明.txt','AppxManifest.xml','ROGStatusLight.cer',

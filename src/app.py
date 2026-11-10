@@ -29,7 +29,7 @@ from runtime_paths import DATA
 from lamp_devices import is_target_lamp, connection_label, device_order
 from background_access import package_identity, policy, access_hint
 
-VERSION = '1.6.1'
+VERSION = '1.7.0'
 ROOT = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
 DATA.mkdir(parents=True, exist_ok=True)
 CONFIG_PATH = DATA / 'config.json'
@@ -97,7 +97,10 @@ class Controller:
                       'full_refreshes': 0,
                       'bluetooth_test_running': False, 'bluetooth_test_status': '蓝牙：尚未测试',
                       'hooks': (DATA/'hooks-installed.json').exists()}
-        self.reader = StatusReader(Path(os.environ.get('CODEX_HOME', str(Path.home() / '.codex'))), DATA)
+        from cloud_status import CloudMonitor
+        codex_home=Path(os.environ.get('CODEX_HOME', str(Path.home() / '.codex')))
+        self.cloud_monitor=CloudMonitor(codex_home)
+        self.reader = StatusReader(codex_home, DATA, self.cloud_monitor)
         self.test_mode = None
         self.test_until = 0
         self.test_started = 0
@@ -165,16 +168,21 @@ class Controller:
             elif name == 'ble-cancel':
                 self.bluetooth_cancel.set()
                 self.bluetooth_test_requested=False
-            elif name in ('idle', 'working', 'attention', 'demo'):
+            elif name in ('idle', 'working', 'attention', 'demo', 'cloud-test'):
                 self.test_mode = name
                 self.test_started = time.perf_counter()
-                self.test_until = self.test_started + (24 if name == 'demo' else 8)
+                self.test_until = self.test_started + (24 if name == 'demo' else 12 if name=='cloud-test' else 8)
             save_config(self.config)
 
     def desired(self):
         current = time.perf_counter()
         if self.test_mode and current < self.test_until:
             mode = self.test_mode
+            if mode=='cloud-test':
+                remote=self.cloud_monitor.snapshot()
+                active=len(remote.active_ids)
+                mode='attention' if remote.pending or remote.error else 'working' if active else 'idle'
+                return mode,f'云端独立测试：{active} 个云端任务 · '+remote.hint,active
             if mode == 'demo':
                 mode = ('idle', 'working', 'attention')[min(2, int((current-self.test_started)/8))]
             return mode, f'测试：{dict(idle="常亮",working="海浪呼吸",attention="呼吸提醒")[mode]}', 0
@@ -199,6 +207,9 @@ class Controller:
                 status = Status('idle', '状态读取待重试', 0)
             with self.lock:
                 self.latest_status = status
+            self.update(local_active=getattr(self.reader,'local_active',status.active),
+                        cloud_active=getattr(self.reader,'cloud_active',0),
+                        cloud_status=getattr(self.reader,'cloud_hint',''))
             self.stop.wait(max(.2, self.config['poll_seconds']))
 
     async def lighting(self):
@@ -513,7 +524,7 @@ def main():
     ttk.Button(buttons,text='灯光设置',command=lambda:os.startfile('ms-settings:personalization-lighting')).pack(side='left',padx=(0,8))
     tests = tk.Frame(root,bg='#f3f3ee')
     tests.pack(anchor='w',padx=28,pady=12)
-    for caption, command in [('常亮测试','idle'),('海浪呼吸','working'),('呼吸提醒','attention'),('完整测试','demo')]:
+    for caption, command in [('常亮测试','idle'),('海浪呼吸','working'),('呼吸提醒','attention'),('完整测试','demo'),('云端测试','cloud-test')]:
         ttk.Button(tests,text=caption,command=lambda name=command:controller.command(name)).pack(side='left',padx=(0,6))
     bluetooth_controls=tk.Frame(root,bg='#f3f3ee')
     bluetooth_controls.pack(anchor='w',padx=28,pady=(0,6))
@@ -540,6 +551,8 @@ def main():
     tray.run_detached()
     status_thread = threading.Thread(target=controller.status_worker,daemon=True,name='task-state-reader')
     status_thread.start()
+    cloud_thread=threading.Thread(target=controller.cloud_monitor.run,args=(controller.stop,),daemon=True,name='cloud-state-reader')
+    cloud_thread.start()
     thread = threading.Thread(target=controller.worker,daemon=True,name='lighting-controller')
     thread.start()
     previous_status = None
@@ -576,7 +589,8 @@ def main():
                         '蓝牙已就绪 · 当前暂停' if state.get('bluetooth_ready') and controller.config['paused'] else
                         '蓝牙正在连接' if state.get('bluetooth_ready') else '蓝牙联动待验证')
         detail_text.set(f"{state['device']}\n{permission}  ·  原色 {state['palette'] or '读取中'}"
-                        + ('\n'+state['background_hint'] if state['background_hint'] else ''))
+                        + ('\n'+state['background_hint'] if state['background_hint'] else '')
+                        + ('\n'+state.get('cloud_status','') if state.get('cloud_status') else ''))
         tray.title = ('ROG 状态灯 · '+(state['reason'] if state['available'] else permission))[:125]
         public = state | {'version':VERSION,'paused':controller.config['paused'],
                           'panel_visible':bool(root.winfo_viewable()),
@@ -602,6 +616,7 @@ def main():
         controller.stop.set()
         thread.join(timeout=12)
         status_thread.join(timeout=3)
+        cloud_thread.join(timeout=1)
         signals.close()
         if controller.ui_ro_initialized:ctypes.windll.combase.RoUninitialize()
         ctypes.windll.kernel32.CloseHandle(mutex)

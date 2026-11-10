@@ -77,7 +77,7 @@ def pending_questions(items):
 
 
 class StatusReader:
-    def __init__(self, codex_home: Path, data_dir: Path):
+    def __init__(self, codex_home: Path, data_dir: Path, cloud_source=None):
         self.home = codex_home
         self.data = data_dir
         self.started = time.time()
@@ -93,11 +93,15 @@ class StatusReader:
         self.last_process_check = 0.0
         self.process_floor = self.started
         self.app_running = False
+        self.cloud_source=cloud_source
+        self.local_active_ids=set()
+        self.local_active=0;self.cloud_active=0;self.cloud_hint=''
 
     def acknowledge(self):
         self.flash_until = 0
         self.hook_errors.clear()
         self.ack_time = time.time()
+        if self.cloud_source is not None:self.cloud_source.acknowledge()
 
     def processes(self):
         if time.monotonic() - self.last_process_check < 2:
@@ -155,6 +159,26 @@ class StatusReader:
                 continue
 
     def snapshot(self):
+        local=self.local_snapshot()
+        self.local_active=local.active
+        if self.cloud_source is None:return local
+        remote=self.cloud_source.snapshot()
+        self.cloud_active=len(remote.active_ids-self.local_active_ids)
+        self.cloud_hint=remote.hint
+        active=local.active+self.cloud_active
+        if remote.pending:return Status('attention','云端任务等待回答或确认',active)
+        if local.mode=='attention':return Status(local.mode,local.reason,active)
+        if remote.error:return Status('attention','云端任务需要处理',active)
+        if remote.completed_at>self.ack_time and 0<=time.time()-remote.completed_at<4.4:
+            return Status('attention','云端任务完成',active)
+        if active:
+            reason=f'{active} 个任务运行中'
+            if self.cloud_active:reason+=f'（本地 {local.active} / 云端 {self.cloud_active}）'
+            return Status('working',reason,active)
+        return local
+
+    def local_snapshot(self):
+        self.local_active_ids=set()
         self.processes()
         self.events()
         if not self.app_running:
@@ -198,6 +222,7 @@ class StatusReader:
                     self.seen_turns[key] = current
                     if turn['status'] == 'inProgress':
                         active += 1
+                        self.local_active_ids.add(key)
                         rows = history.execute('''SELECT item_json FROM thread_items
                             WHERE thread_id=? AND turn_id=? AND
                             item_type IN ('agentMessage','userMessage','commandExecution','fileChange')
@@ -228,6 +253,7 @@ class StatusReader:
             self.last_error = ''
         except (sqlite3.Error, OSError, ValueError) as error:
             self.last_error = str(error)
+            self.local_active_ids.clear()
             return Status('idle', '状态读取待重试', 0)
         if pending or self.hook_waits:
             return Status('attention', '等待回答或确认', active)

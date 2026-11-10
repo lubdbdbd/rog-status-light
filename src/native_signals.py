@@ -2,7 +2,7 @@
 import ctypes
 from ctypes import wintypes
 
-COMMANDS = ('quit', 'pause', 'ack', 'idle', 'working', 'attention', 'demo', 'auto', 'show', 'ble-test', 'ble-wave', 'ble-smooth', 'ble-cancel')
+COMMANDS = ('quit', 'pause', 'ack', 'idle', 'working', 'attention', 'demo', 'auto', 'show', 'ble-test', 'ble-wave', 'ble-smooth', 'ble-cancel', 'cloud-test')
 PREFIX = 'Local\\ROGStatusLight-v1-'
 
 
